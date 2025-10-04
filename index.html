@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Titraussimulaatio - Lopullinen Versio</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f0f0;
+        }
+        main {
+            position: relative; /* Tarvitaan ohjauspaneelin asemointiin */
+            border: 1px solid #ccc;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #left-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 200px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        #simulation-controls, #manual-plot-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: stretch;
+        }
+        #manual-plot-controls label, #quiz-container label {
+            margin-top: 5px;
+            margin-bottom: -5px;
+        }
+        #quiz-container {
+            margin-top: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: center; /* Keskitetään sisältö */
+            width: 100%;
+            max-width: 500px; /* Sopiva leveys */
+        }
+         #quiz-container input {
+            width: 200px;
+         }
+        #feedback-text {
+            text-align: center;
+            font-weight: bold;
+            height: 20px;
+        }
+
+        button {
+            font-size: 1rem;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #reset-button {
+            background-color: #6c757d;
+        }
+        #reset-button:hover {
+            background-color: #5a6268;
+        }
+        input[type="number"] {
+            font-size: 1rem;
+            padding: 8px;
+            width: calc(100% - 18px); /* Täysi leveys miinus padding */
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+    </style>
+    <!-- Haetaan p5.js kirjasto -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+</head>
+<body>
+    <h1>Titraussimulaatio</h1>
+    <!-- p5.js piirtoalue ja ohjaimet tulevat tähän -->
+    <main id="canvas-container">
+        <div id="left-panel">
+            <div id="simulation-controls">
+                <button id="stir-button">Käynnistä sekoitin</button>
+                <button id="tap-button">Avaa hana</button>
+                <button id="reset-button">Nollaa simulaatio</button>
+            </div>
+            <div id="manual-plot-controls">
+                <hr>
+                <label for="volume-input">Tilavuus (ml):</label>
+                <input type="number" id="volume-input" step="0.1">
+                <label for="ph-input">pH:</label>
+                <input type="number" id="ph-input" step="0.01">
+                <button id="add-point-button">Lisää piste</button>
+            </div>
+        </div>
+    </main>
+
+    <div id="quiz-container">
+         <hr style="width: 100%;">
+        <label for="answer-input">Kuinka monta millilitraa tarvittiin NaOH:a neutraloimaan HCl?</label>
+        <input type="number" id="answer-input" step="0.1">
+        <button id="check-answer-button">Tarkista vastaus</button>
+        <p id="feedback-text"></p>
+    </div>
+
+    <script>
+        // --- SIMULAATION TILAMUUTTUJAT ---
+        let isStirring = false;
+        let isTapOpen = false;
+        let stirrerAngle = 0;
+        let tapAngle = 0;
+        let vortexDepth = 0;
+        const STIRRER_SPEED = 0.45;
+        const LIQUID_LEVEL_Y = -100;
+
+        // --- KEMIAN MUUTTUJAT ---
+        const volumeHCl = 0.2; // 200 ml
+        const concNaOH = 1.0;  // 1 M
+        let volumeNaOHAdded = 0.0; // Litroina
+        let currentPH = 1.0;
+        const dropVolume = 0.0005; // 0.5 ml
+        
+        const titrationSetups = [
+            { concHCl: 0.075,  equivalenceVolume: 15.0 },
+            { concHCl: 0.0875, equivalenceVolume: 17.5 },
+            { concHCl: 0.1,    equivalenceVolume: 20.0 },
+            { concHCl: 0.125,  equivalenceVolume: 25.0 }
+        ];
+        let currentTitrationSetup;
+
+        let liquidColor;
+        let colorYellow, colorGreen, colorBlue;
+
+        // --- VISUAALISET MUUTTUJAT ---
+        let swirlParticles = [];
+        const NUM_PARTICLES = 7;
+        const SWIRL_RADIUS_X = 40;
+        const SWIRL_RADIUS_Y = 15;
+        let drops = [];
+        const BURETTE_TIP_Y = 120 + 80;
+        let SIM_CENTER_X;
+
+        // --- KUVAAJAN MUUTTUJAT ---
+        let titrationData = []; // Tallentaa {vol, ph} -objekteja
+
+        function setup() {
+            const canvas = createCanvas(900, 850);
+            canvas.parent('canvas-container');
+            const simAreaStartX = 240;
+            SIM_CENTER_X = simAreaStartX + (width - simAreaStartX) / 2;
+
+            select('#stir-button').mousePressed(toggleStirring);
+            select('#tap-button').mousePressed(toggleTap);
+            select('#reset-button').mousePressed(resetSimulation);
+            select('#add-point-button').mousePressed(addManualPoint);
+            select('#check-answer-button').mousePressed(checkAnswer);
+
+            colorYellow = color(255, 255, 100, 180);
+            colorGreen = color(100, 255, 100, 180);
+            colorBlue = color(100, 100, 255, 180);
+            
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                swirlParticles.push({
+                    angle: random(TWO_PI), speed: random(0.02, 0.05),
+                    alpha: 0, size: random(3, 6)
+                });
+            }
+
+            resetSimulation(); // Kutsutaan kerran alussa arvonnan suorittamiseksi
+        }
+
+        function draw() {
+            background(245);
+            updateState();
+            
+            drawStirrerPlate();
+            drawBurette();
+            drawPhMeter();
+            drawVolumeText();
+            drawFlask();
+            updateAndDrawDrops();
+            drawLiquid();
+            drawPhProbe();
+            updateAndDrawSwirl();
+            drawStirrerBar();
+
+            drawGraph();
+        }
+
+        function chooseNewTitration() {
+            currentTitrationSetup = random(titrationSetups);
+        }
+        
+        function resetSimulation() {
+            isStirring = false;
+            isTapOpen = false;
+            select('#stir-button').html('Käynnistä sekoitin');
+            select('#tap-button').html('Avaa hana');
+            
+            chooseNewTitration(); // Arvotaan uusi asetelma
+
+            volumeNaOHAdded = 0.0;
+            currentPH = -Math.log10(currentTitrationSetup.concHCl); // Lasketaan uusi aloitus-pH
+            titrationData = [];
+            drops = [];
+            select('#volume-input').value('');
+            select('#ph-input').value('');
+            select('#answer-input').value('');
+            select('#feedback-text').html('');
+            updateLiquidColor();
+        }
+        
+        function addManualPoint() {
+            const volInput = select('#volume-input');
+            const phInput = select('#ph-input');
+
+            const volume = parseFloat(volInput.value());
+            const ph = parseFloat(phInput.value());
+
+            if (!isNaN(volume) && !isNaN(ph) && volume <= 30) {
+                titrationData.push({ vol: volume, ph: ph });
+                titrationData.sort((a, b) => a.vol - b.vol); 
+                volInput.value('');
+                phInput.value('');
+            }
+        }
+
+        function checkAnswer() {
+            const answerInput = select('#answer-input');
+            const feedbackText = select('#feedback-text');
+            const userAnswer = parseFloat(answerInput.value());
+
+            if (userAnswer === currentTitrationSetup.equivalenceVolume) {
+                feedbackText.html('Oikein!');
+                feedbackText.style('color', 'green');
+            } else {
+                feedbackText.html('Yritä uudelleen.');
+                feedbackText.style('color', 'red');
+            }
+        }
+
+        function updateState() {
+            if (isStirring) {
+                stirrerAngle += STIRRER_SPEED;
+                vortexDepth = map(sin(stirrerAngle * 2), -1, 1, 3, 15);
+            } else {
+                vortexDepth = lerp(vortexDepth, 0, 0.1);
+            }
+
+            let targetAngle = isTapOpen ? HALF_PI : 0;
+            tapAngle = lerp(tapAngle, targetAngle, 0.1);
+            
+            if (isTapOpen && frameCount % 15 === 0 && volumeNaOHAdded <= 0.03) {
+                 drops.push({
+                     x: 0, y: BURETTE_TIP_Y,
+                     speed: random(4, 6), size: random(6, 8)
+                 });
+            }
+        }
+
+        function calculateAndUpdatePH() {
+            const molesHCl_initial = currentTitrationSetup.concHCl * volumeHCl;
+            const molesNaOH_added = concNaOH * volumeNaOHAdded;
+            const totalVolume = volumeHCl + volumeNaOHAdded;
+
+            if (molesNaOH_added < molesHCl_initial) {
+                currentPH = -Math.log10((molesHCl_initial - molesNaOH_added) / totalVolume);
+            } else if (abs(molesNaOH_added - molesHCl_initial) < 1e-9) {
+                currentPH = 7.0;
+            } else {
+                const pOH = -Math.log10((molesNaOH_added - molesHCl_initial) / totalVolume);
+                currentPH = 14.0 - pOH;
+            }
+            updateLiquidColor();
+        }
+
+        function updateLiquidColor() {
+            if (currentPH < 6.0) liquidColor = colorYellow;
+            else if (currentPH <= 7.6) liquidColor = colorGreen;
+            else liquidColor = colorBlue;
+        }
+
+        function drawGraph() {
+            push();
+            const graphX = 80, graphY = 540, graphW = width - 160, graphH = 250;
+            
+            fill(255); noStroke(); rect(graphX, graphY, graphW, graphH);
+            
+            stroke(220);
+            strokeWeight(1);
+            for (let i = 0; i <= 14; i += 2) {
+                const y = map(i, 0, 14, graphY + graphH, graphY);
+                line(graphX, y, graphX + graphW, y);
+            }
+            for (let v = 0; v <= 30; v += 5) {
+                const x = map(v, 0, 30, graphX, graphX + graphW);
+                line(x, graphY, x, graphY + graphH);
+            }
+
+            stroke(0); strokeWeight(1); noFill();
+            rect(graphX, graphY, graphW, graphH);
+
+            fill(0); textSize(14); textAlign(CENTER, CENTER);
+            text('Lisätty NaOH (ml)', graphX + graphW / 2, graphY + graphH + 40);
+            push();
+            translate(graphX - 50, graphY + graphH / 2); rotate(-HALF_PI);
+            text('pH', 0, 0);
+            pop();
+
+            textSize(12);
+            for (let i = 0; i <= 14; i += 2) {
+                const y = map(i, 0, 14, graphY + graphH, graphY);
+                stroke(0); line(graphX - 5, y, graphX, y);
+                textAlign(RIGHT, CENTER); noStroke(); fill(0);
+                text(i, graphX - 8, y);
+            }
+            for (let v = 0; v <= 30; v += 5) {
+                const x = map(v, 0, 30, graphX, graphX + graphW);
+                stroke(0);
+                line(x, graphY + graphH, x, graphY + graphH + 5);
+                textAlign(CENTER, TOP); noStroke(); fill(0);
+                text(v, x, graphY + graphH + 8);
+            }
+
+            stroke(255, 0, 0); strokeWeight(2);
+            beginShape();
+            noFill();
+            for (const point of titrationData) {
+                const x = map(point.vol, 0, 30, graphX, graphX + graphW);
+                const y = map(point.ph, 0, 14, graphY + graphH, graphY);
+                vertex(x, y);
+                push(); noStroke(); fill(255,0,0); ellipse(x,y,5,5); pop();
+            }
+            endShape();
+            pop();
+        }
+
+        function drawStirrerPlate() {
+            push();
+            translate(SIM_CENTER_X, 0);
+            noStroke(); fill(200); 
+            rect(-150, height - 370, 300, 20, 5);
+            pop();
+        }
+
+        function drawPhMeter() {
+            push();
+            const meterX = SIM_CENTER_X + 130;
+            noStroke(); fill(80); rect(meterX, 150, 150, 80, 5);
+            fill(180, 220, 180); rect(meterX+10, 160, 130, 60, 3);
+            fill(0); textSize(24); textAlign(RIGHT, CENTER); textFont('monospace');
+            
+            let phString;
+            if (!isStirring && isTapOpen) {
+                phString = `pH: ${(currentPH + random(-0.3, 0.3)).toFixed(2)}`;
+            } else {
+                phString = `pH: ${currentPH.toFixed(2)}`;
+            }
+            text(phString, meterX + 140, 190);
+            pop();
+        }
+
+        function drawVolumeText() {
+            push();
+            fill(0); textSize(16); textAlign(CENTER, BOTTOM);
+            const volumeInML = volumeNaOHAdded * 1000;
+            text(`Lisätty NaOH: ${volumeInML.toFixed(1)} ml`, SIM_CENTER_X + 205, 145);
+            pop();
+        }
+
+        function drawPhProbe() {
+            push();
+            const flaskTopY = height - 370;
+            translate(SIM_CENTER_X, flaskTopY);
+            noFill(); stroke(50); strokeWeight(3);
+            beginShape();
+            curveVertex(40, -45); curveVertex(40, -45);
+            curveVertex(30, -295);
+            const endPointX = (SIM_CENTER_X + 130) - SIM_CENTER_X;
+            const endPointY = 190 - flaskTopY;
+            curveVertex(endPointX, endPointY); curveVertex(endPointX, endPointY);
+            endShape();
+            noStroke(); fill(120); rect(35, -70, 10, 25, 3);
+            fill(255, 255, 200); ellipse(40, -45, 12, 12);
+            pop();
+        }
+        
+        function drawBurette() {
+            push();
+            translate(SIM_CENTER_X, 120);
+            noStroke(); fill(180, 220, 255, 200); rect(-5, -118, 10, 128);
+            beginShape(); vertex(-2.5, 28); vertex(-1.5, 80); vertex(1.5, 80); vertex(2.5, 28); endShape(CLOSE);
+            stroke(150, 180, 200, 150); strokeWeight(3); fill(240, 245, 255, 150); rect(-7, -120, 14, 130);
+            noStroke(); fill(100, 120, 140); rect(-25, 10, 50, 18, 4);
+            push(); translate(0, 19); rotate(tapAngle);
+            fill(120, 140, 160); rect(-4, -17.5, 8, 35, 4);
+            pop();
+            noFill(); stroke(150, 180, 200, 150); strokeWeight(2);
+            beginShape(); vertex(-3, 28); vertex(-2, 80); vertex(2, 80); vertex(3, 28); endShape();
+            pop();
+        }
+
+        function drawFlask() {
+            push();
+            translate(SIM_CENTER_X, height - 370);
+            noFill(); stroke(150, 180, 200, 150); strokeWeight(4);
+            beginShape();
+            vertex(100, 0); vertex(70, -200); vertex(30, -250); vertex(30, -280);
+            vertex(40, -290); vertex(-40, -290); vertex(-30, -280); vertex(-30, -250);
+            vertex(-70, -200); vertex(-100, 0);
+            endShape(); line(-100, 0, 100, 0);
+            pop();
+        }
+
+        function updateAndDrawDrops() {
+            for (let i = drops.length - 1; i >= 0; i--) {
+                let d = drops[i];
+                d.y += d.speed;
+
+                noStroke(); fill(180, 220, 255, 200);
+                ellipse(SIM_CENTER_X + d.x, d.y, d.size, d.size * 1.5);
+
+                const liquidSurfaceAbsoluteY = (height - 370) + LIQUID_LEVEL_Y;
+                if (d.y > liquidSurfaceAbsoluteY) {
+                    volumeNaOHAdded += dropVolume;
+                    calculateAndUpdatePH();
+                    drops.splice(i, 1);
+                    if (!isStirring) vortexDepth = 10;
+                }
+            }
+        }
+        
+        function drawLiquid() {
+            push();
+            translate(SIM_CENTER_X, height - 370);
+            noStroke(); fill(liquidColor);
+            const surfaceX = map(LIQUID_LEVEL_Y, 0, -200, 100, 70);
+            beginShape();
+            vertex(-100, 0); vertex(-surfaceX, LIQUID_LEVEL_Y);
+            if (vortexDepth > 1) {
+                 quadraticVertex(0, LIQUID_LEVEL_Y + vortexDepth, surfaceX, LIQUID_LEVEL_Y);
+            } else {
+                 quadraticVertex(0, LIQUID_LEVEL_Y - 5, surfaceX, LIQUID_LEVEL_Y);
+            }
+            vertex(100, 0);
+            endShape(CLOSE);
+            pop();
+        }
+
+        function updateAndDrawSwirl() {
+            push();
+            translate(SIM_CENTER_X, height - 395);
+            swirlParticles.forEach(p => {
+                let targetAlpha = 0;
+                if (isStirring) {
+                    p.angle += p.speed;
+                    targetAlpha = map(sin(p.angle * 3), -1, 1, 50, 200);
+                }
+                p.alpha = lerp(p.alpha, targetAlpha, 0.05);
+                if (p.alpha > 10) {
+                    const x = cos(p.angle) * SWIRL_RADIUS_X;
+                    const y = sin(p.angle) * SWIRL_RADIUS_Y;
+                    noStroke(); fill(255, 255, 255, p.alpha);
+                    ellipse(x, y, p.size, p.size);
+                }
+            });
+            pop();
+        }
+
+        function drawStirrerBar() {
+            push();
+            translate(SIM_CENTER_X, height - 375);
+            const barWidth = map(abs(cos(stirrerAngle)), 0, 1, 20, 60);
+            const barBrightness = map(sin(stirrerAngle), -1, 1, 240, 255);
+            noStroke(); fill(barBrightness); rectMode(CENTER);
+            rect(0, 0, barWidth, 12, 10);
+            pop();
+        }
+        
+        function toggleStirring() {
+            isStirring = !isStirring;
+            select('#stir-button').html(isStirring ? 'Pysäytä sekoitin' : 'Käynnistä sekoitin');
+        }
+
+        function toggleTap() {
+            isTapOpen = !isTapOpen;
+            select('#tap-button').html(isTapOpen ? 'Sulje hana' : 'Avaa hana');
+        }
+    </script>
+</body>
+</html>
